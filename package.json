@@ -1,0 +1,14 @@
+{
+  "name": "md-slack-preview",
+  "version": "1.0.0",
+  "description": "Slack bot that renders markdown file previews",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^17.4.1"
+  }
+}
