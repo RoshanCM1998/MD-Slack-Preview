@@ -38,7 +38,7 @@ const app = new App({
 });
 
 const MD_EXTENSIONS = [".md", ".mdx", ".markdown", ".mdown", ".mkd"];
-const MAX_MARKDOWN_BLOCK_CHARS = 12000;
+const MAX_BLOCKS_PER_MESSAGE = 50;
 
 // --- Helpers ---
 
@@ -58,43 +58,20 @@ async function downloadFile(url, token) {
   return resp.text();
 }
 
-function buildPreviewBlocks(content, fileName) {
-  const blocks = [];
+async function markdownToSlackBlocks(content) {
+  // Dynamic import for ESM module
+  const { markdownToBlocks } = await import("@tryfabric/mack");
+  return markdownToBlocks(content);
+}
 
-  blocks.push({
-    type: "context",
-    elements: [
-      { type: "mrkdwn", text: `*Rendered preview of \`${fileName}\`*` },
-    ],
-  });
-
-  if (content.length <= MAX_MARKDOWN_BLOCK_CHARS) {
-    blocks.push({ type: "markdown", text: content });
-  } else {
-    const lines = content.split("\n");
-    let chunk = "";
-    for (const line of lines) {
-      if (chunk.length + line.length + 1 > MAX_MARKDOWN_BLOCK_CHARS) {
-        blocks.push({ type: "markdown", text: chunk });
-        chunk = "";
-      }
-      chunk += (chunk ? "\n" : "") + line;
-    }
-    if (chunk) {
-      blocks.push({ type: "markdown", text: chunk });
-    }
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `_File was ${content.length.toLocaleString()} chars — split into ${blocks.length - 1} sections_`,
-        },
-      ],
-    });
+function chunkBlocks(blocks, maxPerMessage) {
+  // Split blocks array into groups that fit within Slack's limit.
+  // Reserve 1 slot for the context header in the first message.
+  const chunks = [];
+  for (let i = 0; i < blocks.length; i += maxPerMessage) {
+    chunks.push(blocks.slice(i, i + maxPerMessage));
   }
-
-  return blocks;
+  return chunks;
 }
 
 // --- Auto-join all public channels on startup ---
@@ -136,6 +113,7 @@ async function joinAllPublicChannels(client) {
 // --- Auto-join newly created public channels ---
 
 app.event("channel_created", async ({ event, client }) => {
+  if (process.env.AUTO_JOIN_CHANNELS !== "true") return;
   try {
     await client.conversations.join({ channel: event.channel.id });
     console.log(`Joined new channel: #${event.channel.name}`);
@@ -160,10 +138,10 @@ app.event("file_shared", async ({ event, client }) => {
 
     if (!content.trim()) return;
 
-    const blocks = buildPreviewBlocks(content, file.name);
+    // Convert markdown to Slack Block Kit blocks using mack
+    const allBlocks = await markdownToSlackBlocks(content);
 
-    // Find the message with this file to get correct thread_ts.
-    // First check top-level messages.
+    // Find the message with this file to get correct thread_ts
     const history = await client.conversations.history({
       channel: event.channel_id,
       limit: 10,
@@ -174,12 +152,10 @@ app.event("file_shared", async ({ event, client }) => {
     for (const msg of history.messages || []) {
       const msgFiles = msg.files || [];
       if (msgFiles.some((f) => f.id === event.file_id)) {
-        // File was shared at channel level — reply in thread on this message
         threadTs = msg.ts;
         break;
       }
 
-      // If this message has a thread, check replies too
       if (msg.reply_count > 0) {
         try {
           const replies = await client.conversations.replies({
@@ -190,8 +166,7 @@ app.event("file_shared", async ({ event, client }) => {
           for (const reply of replies.messages || []) {
             const replyFiles = reply.files || [];
             if (replyFiles.some((f) => f.id === event.file_id)) {
-              // File was shared inside a thread — reply in the SAME thread
-              threadTs = msg.ts; // use parent ts, not reply ts
+              threadTs = msg.ts;
               break;
             }
           }
@@ -202,14 +177,42 @@ app.event("file_shared", async ({ event, client }) => {
       }
     }
 
+    // First message: context header + first batch of blocks
+    const headerBlock = {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: `*Rendered preview of \`${file.name}\`*` },
+      ],
+    };
+
+    // Chunk blocks into groups of max 49 (50 minus header for first message)
+    const firstBatch = allBlocks.slice(0, MAX_BLOCKS_PER_MESSAGE - 1);
+    const remainingBlocks = allBlocks.slice(MAX_BLOCKS_PER_MESSAGE - 1);
+
     await client.chat.postMessage({
       channel: event.channel_id,
       thread_ts: threadTs,
-      blocks,
+      blocks: [headerBlock, ...firstBatch],
       text: `Rendered preview of ${file.name}`,
     });
 
-    console.log(`Posted preview for ${file.name} in ${event.channel_id}`);
+    // Send remaining chunks as follow-up messages in the same thread
+    if (remainingBlocks.length > 0) {
+      const chunks = chunkBlocks(remainingBlocks, MAX_BLOCKS_PER_MESSAGE);
+      for (const chunk of chunks) {
+        await client.chat.postMessage({
+          channel: event.channel_id,
+          thread_ts: threadTs,
+          blocks: chunk,
+          text: `Rendered preview of ${file.name} (continued)`,
+        });
+      }
+    }
+
+    const totalMessages = 1 + Math.ceil(remainingBlocks.length / MAX_BLOCKS_PER_MESSAGE);
+    console.log(
+      `Posted preview for ${file.name} — ${allBlocks.length} blocks in ${totalMessages} message(s)`
+    );
   } catch (err) {
     console.error("Error handling file_shared:", err.message);
   }
@@ -223,11 +226,14 @@ app.event("file_shared", async ({ event, client }) => {
   console.log(`MD Preview Bot is running on port ${port}`);
   console.log(`   Waiting for .md files to be shared...`);
 
-  // Auto-join all public channels
-  try {
-    await joinAllPublicChannels(app.client);
-  } catch (e) {
-    console.log("   Could not auto-join channels:", e.message);
-    console.log("   Add 'channels:join' scope and reinstall the app");
+  if (process.env.AUTO_JOIN_CHANNELS === "true") {
+    try {
+      await joinAllPublicChannels(app.client);
+    } catch (e) {
+      console.log("   Could not auto-join channels:", e.message);
+      console.log("   Add 'channels:join' scope and reinstall the app");
+    }
+  } else {
+    console.log("   Auto-join disabled. Set AUTO_JOIN_CHANNELS=true to enable");
   }
 })();
