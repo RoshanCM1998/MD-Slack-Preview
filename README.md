@@ -1,150 +1,201 @@
-# MD Slack Preview
+<p align="center">
+  <h1 align="center">MD Slack Preview</h1>
+  <p align="center">
+    Automatically render beautiful markdown previews when <code>.md</code> files are shared in Slack.
+    <br />
+    <strong>One install. Entire workspace. Zero per-user setup.</strong>
+    <br />
+    <br />
+    <a href="SETUP.md"><strong>Setup Guide &raquo;</strong></a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://github.com/slackapi/bolt-js">Bolt.js</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://github.com/tryfabric/mack">@tryfabric/mack</a>
+  </p>
+</p>
 
-A Slack bot that automatically renders markdown (.md) file previews when someone shares a markdown file in any channel. One install covers the entire workspace.
+<br />
 
-## What It Does
+## Features
 
-- Someone drops a `.md` file in a Slack channel
-- Bot replies in the thread with a rendered preview (headings, tables, code blocks, lists, etc.)
-- Small files: full preview in one message
-- Large files: preview with a **"Show full preview"** button — click to expand
-- Works in public channels, private channels, and group DMs
-- Auto-joins all public channels (configurable)
-
-## What It Does NOT Do
-
-- Does not work in self-DMs (Slack platform limitation)
-- Does not work in 1-on-1 DMs unless the bot is added to the conversation
-- Cannot customize visual styling (fonts, colors) — Slack controls rendering
-- Cannot replace Slack's native file preview panel
-
-## Quick Start
-
-See **[SETUP.md](SETUP.md)** for the full step-by-step setup guide.
-
-```bash
-npm install
-# Create .env with your tokens (see SETUP.md Step 6)
-npm start
-# In another terminal:
-npm run tunnel
-```
+- **Automatic previews** — drop a `.md` file in any channel, get a rendered preview in the thread
+- **Smart large file handling** — files with 30+ blocks show a compact preview with a "Show full preview" button
+- **Thread-aware** — files shared inside a thread get previews in the same thread
+- **Auto-join channels** — optionally joins all public channels on startup and new ones as they're created
+- **Full markdown support** — headings, tables, code blocks with syntax highlighting, lists, task lists, blockquotes, links, images, and more
+- **Free** — $0/month on Slack's free plan with free-tier hosting
 
 ## How It Works
 
+```
+User drops README.md into #engineering
+         |
+         v
+  +------+-------+
+  | Slack fires   |
+  | file_shared   |
+  | event         |
+  +------+-------+
+         |
+         v
+  +------+-------+
+  | Bot downloads |
+  | file content  |
+  +------+-------+
+         |
+         v
+  +------+--------+
+  | @tryfabric/mack|
+  | converts to    |
+  | Block Kit      |
+  +------+---------+
+         |
+         v
+  +------+-------+
+  | Bot posts     |
+  | threaded      |
+  | reply         |
+  +--------------+
+```
+
 ### Small files (30 blocks or fewer)
 
-The entire rendered preview is posted in one message as a threaded reply.
+Full rendered preview in a single threaded reply.
 
-### Large files (more than 30 blocks)
+### Large files (30+ blocks)
 
-1. A preview (first 30 blocks) is posted with a **"Show full preview"** button
-2. When someone clicks the button:
-   - The button changes to "Loading full preview..."
-   - The full content is posted as follow-up messages in the same thread
-   - The button is replaced with "Full preview posted below"
+1. Preview of the first 30 blocks + **"Show full preview"** button
+2. Click the button:
+   - Button changes to *"Loading full preview..."*
+   - Full content posted as follow-up messages in the same thread
+   - Button replaced with *"Full preview posted below"*
 
-### Thread awareness
+## Quick Start
 
-If a file is shared inside a thread reply, the bot's preview appears in the **same thread** — not at the channel level.
-
-### Supported file extensions
-
-`.md`, `.mdx`, `.markdown`, `.mdown`, `.mkd`
-
-## Architecture
-
-```
-User uploads .md file in Slack
-         |
-         v
-Slack fires "file_shared" event
-         |
-         v
-Cloudflare Tunnel --> localhost:3000
-         |
-         v
-Bot (Bolt.js) receives event
-         |
-         v
-Bot calls files.info --> checks if markdown
-         |
-         v
-Bot downloads file content
-         |
-         v
-@tryfabric/mack converts Markdown --> Slack Block Kit blocks
-         |
-         v
-Bot posts threaded reply with rendered blocks
-(preview + "Show full" button if large)
+```bash
+git clone https://github.com/your-org/md-slack-preview.git
+cd md-slack-preview
+npm install
 ```
 
-## Where It Works
+Create a `.env` file:
 
-| Scenario | Automatic? | Action needed |
-|----------|-----------|---------------|
-| All public channels (existing + new) | Yes | Set `AUTO_JOIN_CHANNELS=true` |
-| Private channels | No | `/invite @MD Preview` once per channel |
+```env
+SLACK_BOT_TOKEN=xoxb-your-token
+SLACK_SIGNING_SECRET=your-secret
+PORT=3000
+AUTO_JOIN_CHANNELS=false
+```
+
+Start the bot and tunnel:
+
+```bash
+# Terminal 1
+npm start
+
+# Terminal 2
+npm run tunnel
+```
+
+> **New to this?** Follow the complete **[Setup Guide](SETUP.md)** — it walks you through creating the Slack app, configuring scopes, and connecting everything.
+
+## Configuration
+
+| Variable | Required | Default | Description |
+|----------|:--------:|:-------:|-------------|
+| `SLACK_BOT_TOKEN` | Yes | — | Bot token (`xoxb-...`) |
+| `SLACK_SIGNING_SECRET` | Yes | — | Signing secret from app credentials |
+| `PORT` | No | `3000` | Server port |
+| `AUTO_JOIN_CHANNELS` | No | `false` | Auto-join all public channels on startup |
+
+## Supported File Types
+
+| Extension | Detected |
+|-----------|:--------:|
+| `.md` | Yes |
+| `.mdx` | Yes |
+| `.markdown` | Yes |
+| `.mdown` | Yes |
+| `.mkd` | Yes |
+
+## Channel Coverage
+
+| Scenario | Automatic | Action Required |
+|----------|:---------:|-----------------|
+| Public channels (existing + new) | Yes | Set `AUTO_JOIN_CHANNELS=true` |
+| Private channels | No | `/invite @MD Preview` once |
 | Group DMs | No | Add bot as participant |
-| 1-on-1 DMs | No | Not practical (becomes 3-person chat) |
-| Self-DMs | Never | Slack platform limitation |
+| 1-on-1 DMs | No | Not practical |
+| Self-DMs | — | Not supported by Slack |
 
-## Environment Variables
+## Slack API Scopes
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SLACK_BOT_TOKEN` | Yes | Bot token starting with `xoxb-` |
-| `SLACK_SIGNING_SECRET` | Yes | From Basic Information -> App Credentials |
-| `PORT` | No | Server port (default: 3000) |
-| `AUTO_JOIN_CHANNELS` | No | `true` to auto-join all public channels on startup (default: `false`) |
+| Scope | Why |
+|-------|-----|
+| `files:read` | Read uploaded files |
+| `chat:write` | Post preview messages |
+| `channels:history` | Read public channel messages |
+| `channels:read` | List channels for auto-join |
+| `channels:join` | Join public channels |
+| `groups:history` | Read private channel messages |
+| `im:history` | Read DM messages |
+| `mpim:history` | Read group DM messages |
 
-## Slack Platform Limits
+## Platform Limits
 
-| Limit | Value |
-|-------|-------|
-| Max blocks per message | 50 |
-| Max characters per message | 40,000 |
-| Bot auto-join public channels | Yes (with `channels:join` scope) |
-| Bot auto-join private channels | No (must be invited) |
+These are Slack's limits, not ours:
+
+| Constraint | Limit |
+|------------|-------|
+| Blocks per message | 50 |
+| Characters per message | 40,000 |
+| Auto-join private channels | Not possible |
+| Custom CSS / styling | Not possible |
 | Bot in self-DMs | Not possible |
-| Custom CSS/styling | Not possible |
 
-## Production Hosting
+## Production Deployment
 
-For production, replace the Cloudflare tunnel with a permanent deployment:
+Replace the Cloudflare dev tunnel with a permanent host:
 
-| Option | Cost | Notes |
-|--------|------|-------|
-| **Railway** | Free tier / $5 mo | Git push to deploy |
-| **Render** | Free tier | Auto-deploys from GitHub |
-| **AWS Lambda** | ~$0/mo at low volume | Needs API Gateway config |
-| **Fly.io** | Free tier | Docker-based |
-| **VPS** (any) | $5/mo | You manage uptime |
+| Platform | Cost | Setup |
+|----------|------|-------|
+| [Railway](https://railway.app) | Free / $5 mo | `git push` to deploy |
+| [Render](https://render.com) | Free tier | Auto-deploy from GitHub |
+| [Fly.io](https://fly.io) | Free tier | Docker-based |
+| [AWS Lambda](https://aws.amazon.com/lambda/) | ~$0/mo | Needs API Gateway |
 
-Update the Event Subscriptions and Interactivity URLs to your production URL.
+Then update the **Event Subscriptions** and **Interactivity** URLs in your Slack app settings to point to your production URL.
 
 ## Tech Stack
 
-| Component | Library | Purpose |
-|-----------|---------|---------|
-| Slack framework | [@slack/bolt](https://github.com/slackapi/bolt-js) | Event handling, API calls |
-| Markdown converter | [@tryfabric/mack](https://github.com/tryfabric/mack) | Markdown/GFM -> Slack Block Kit blocks |
-| Tunnel (dev) | [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) | Expose localhost to Slack |
+| Component | Library |
+|-----------|---------|
+| Slack framework | [@slack/bolt](https://github.com/slackapi/bolt-js) |
+| Markdown to blocks | [@tryfabric/mack](https://github.com/tryfabric/mack) |
+| Dev tunnel | [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) |
 
-## Cost
+## Project Structure
 
-| Component | Cost |
-|-----------|------|
-| Slack API / Bot | Free (all plans) |
-| Slack workspace | Free plan works (unlimited users, 90-day history) |
-| Hosting | Free tier available on Railway, Render, Fly.io, etc. |
-| **Total** | **$0/month** for most setups |
+```
+md-slack-preview/
+  bot.js              # Bot source code
+  package.json        # Dependencies and scripts
+  .env                # Tokens (not committed)
+  env.example         # Template for .env
+  test-sample.md      # Sample markdown for testing
+  SETUP.md            # Step-by-step setup guide
+  README.md           # This file
+  LICENSE             # MIT
+```
 
-## Troubleshooting
+## Contributing
 
-See **[SETUP.md](SETUP.md)** — the troubleshooting section at the bottom covers all known issues.
+1. Fork the repo
+2. Create a feature branch
+3. Make your changes
+4. Test with a Slack sandbox workspace
+5. Open a PR
 
 ## License
 
-MIT
+[MIT](LICENSE)
