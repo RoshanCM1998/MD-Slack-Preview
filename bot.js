@@ -39,6 +39,7 @@ const app = new App({
 
 const MD_EXTENSIONS = [".md", ".mdx", ".markdown", ".mdown", ".mkd"];
 const MAX_BLOCKS_PER_MESSAGE = 50;
+const PREVIEW_BLOCKS_COUNT = 30;
 
 // --- Helpers ---
 
@@ -59,19 +60,42 @@ async function downloadFile(url, token) {
 }
 
 async function markdownToSlackBlocks(content) {
-  // Dynamic import for ESM module
   const { markdownToBlocks } = await import("@tryfabric/mack");
   return markdownToBlocks(content);
 }
 
-function chunkBlocks(blocks, maxPerMessage) {
-  // Split blocks array into groups that fit within Slack's limit.
-  // Reserve 1 slot for the context header in the first message.
-  const chunks = [];
-  for (let i = 0; i < blocks.length; i += maxPerMessage) {
-    chunks.push(blocks.slice(i, i + maxPerMessage));
+async function findThreadTs(client, channelId, fileId) {
+  const history = await client.conversations.history({
+    channel: channelId,
+    limit: 10,
+  });
+
+  for (const msg of history.messages || []) {
+    const msgFiles = msg.files || [];
+    if (msgFiles.some((f) => f.id === fileId)) {
+      return msg.ts;
+    }
+
+    if (msg.reply_count > 0) {
+      try {
+        const replies = await client.conversations.replies({
+          channel: channelId,
+          ts: msg.ts,
+          limit: 20,
+        });
+        for (const reply of replies.messages || []) {
+          const replyFiles = reply.files || [];
+          if (replyFiles.some((f) => f.id === fileId)) {
+            return msg.ts;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
   }
-  return chunks;
+
+  return null;
 }
 
 // --- Auto-join all public channels on startup ---
@@ -138,46 +162,9 @@ app.event("file_shared", async ({ event, client }) => {
 
     if (!content.trim()) return;
 
-    // Convert markdown to Slack Block Kit blocks using mack
     const allBlocks = await markdownToSlackBlocks(content);
+    const threadTs = await findThreadTs(client, event.channel_id, event.file_id);
 
-    // Find the message with this file to get correct thread_ts
-    const history = await client.conversations.history({
-      channel: event.channel_id,
-      limit: 10,
-    });
-
-    let threadTs = null;
-
-    for (const msg of history.messages || []) {
-      const msgFiles = msg.files || [];
-      if (msgFiles.some((f) => f.id === event.file_id)) {
-        threadTs = msg.ts;
-        break;
-      }
-
-      if (msg.reply_count > 0) {
-        try {
-          const replies = await client.conversations.replies({
-            channel: event.channel_id,
-            ts: msg.ts,
-            limit: 20,
-          });
-          for (const reply of replies.messages || []) {
-            const replyFiles = reply.files || [];
-            if (replyFiles.some((f) => f.id === event.file_id)) {
-              threadTs = msg.ts;
-              break;
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
-        if (threadTs) break;
-      }
-    }
-
-    // First message: context header + first batch of blocks
     const headerBlock = {
       type: "context",
       elements: [
@@ -185,36 +172,149 @@ app.event("file_shared", async ({ event, client }) => {
       ],
     };
 
-    // Chunk blocks into groups of max 49 (50 minus header for first message)
-    const firstBatch = allBlocks.slice(0, MAX_BLOCKS_PER_MESSAGE - 1);
-    const remainingBlocks = allBlocks.slice(MAX_BLOCKS_PER_MESSAGE - 1);
+    if (allBlocks.length <= PREVIEW_BLOCKS_COUNT) {
+      // Small file — send everything in one message
+      await client.chat.postMessage({
+        channel: event.channel_id,
+        thread_ts: threadTs,
+        blocks: [headerBlock, ...allBlocks],
+        text: `Rendered preview of ${file.name}`,
+      });
+      console.log(`Posted preview for ${file.name} — ${allBlocks.length} blocks`);
+    } else {
+      // Large file — show preview + "Show full preview" button
+      const previewBlocks = allBlocks.slice(0, PREVIEW_BLOCKS_COUNT);
 
-    await client.chat.postMessage({
-      channel: event.channel_id,
-      thread_ts: threadTs,
-      blocks: [headerBlock, ...firstBatch],
-      text: `Rendered preview of ${file.name}`,
-    });
+      const footerBlock = {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `_Showing ${PREVIEW_BLOCKS_COUNT} of ${allBlocks.length} blocks — click below for full preview_`,
+          },
+        ],
+      };
 
-    // Send remaining chunks as follow-up messages in the same thread
-    if (remainingBlocks.length > 0) {
-      const chunks = chunkBlocks(remainingBlocks, MAX_BLOCKS_PER_MESSAGE);
-      for (const chunk of chunks) {
-        await client.chat.postMessage({
-          channel: event.channel_id,
-          thread_ts: threadTs,
-          blocks: chunk,
-          text: `Rendered preview of ${file.name} (continued)`,
-        });
-      }
+      const buttonBlock = {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Show full preview" },
+            style: "primary",
+            action_id: "show_full_preview",
+            value: JSON.stringify({
+              file_id: event.file_id,
+              channel_id: event.channel_id,
+            }),
+          },
+        ],
+      };
+
+      await client.chat.postMessage({
+        channel: event.channel_id,
+        thread_ts: threadTs,
+        blocks: [headerBlock, ...previewBlocks, footerBlock, buttonBlock],
+        text: `Rendered preview of ${file.name}`,
+      });
+
+      console.log(
+        `Posted preview for ${file.name} — ${PREVIEW_BLOCKS_COUNT}/${allBlocks.length} blocks (truncated)`
+      );
     }
-
-    const totalMessages = 1 + Math.ceil(remainingBlocks.length / MAX_BLOCKS_PER_MESSAGE);
-    console.log(
-      `Posted preview for ${file.name} — ${allBlocks.length} blocks in ${totalMessages} message(s)`
-    );
   } catch (err) {
     console.error("Error handling file_shared:", err.message);
+  }
+});
+
+// --- "Show full preview" button handler ---
+
+app.action("show_full_preview", async ({ action, body, client, ack }) => {
+  await ack();
+
+  try {
+    const { file_id, channel_id } = JSON.parse(action.value);
+
+    // Update the button to show loading state
+    const originalMessage = body.message;
+    const updatedBlocks = originalMessage.blocks.map((block) => {
+      if (block.type === "actions") {
+        return {
+          type: "context",
+          elements: [
+            { type: "mrkdwn", text: "_Loading full preview..._" },
+          ],
+        };
+      }
+      return block;
+    });
+
+    await client.chat.update({
+      channel: channel_id,
+      ts: originalMessage.ts,
+      blocks: updatedBlocks,
+      text: originalMessage.text,
+    });
+
+    // Re-download and re-process the file
+    const fileInfo = await client.files.info({ file: file_id });
+    const file = fileInfo.file;
+
+    const content = await downloadFile(
+      file.url_private_download,
+      process.env.SLACK_BOT_TOKEN
+    );
+
+    const allBlocks = await markdownToSlackBlocks(content);
+
+    // Send full content as follow-up messages in the same thread
+    const threadTs = originalMessage.thread_ts || originalMessage.ts;
+
+    for (let i = 0; i < allBlocks.length; i += MAX_BLOCKS_PER_MESSAGE) {
+      const chunk = allBlocks.slice(i, i + MAX_BLOCKS_PER_MESSAGE);
+      await client.chat.postMessage({
+        channel: channel_id,
+        thread_ts: threadTs,
+        blocks: chunk,
+        text: `Full preview of ${file.name}`,
+      });
+    }
+
+    // Update original message: remove loading, show "full preview posted"
+    const finalBlocks = originalMessage.blocks.map((block) => {
+      if (block.type === "actions") {
+        return {
+          type: "context",
+          elements: [
+            { type: "mrkdwn", text: "_Full preview posted below_" },
+          ],
+        };
+      }
+      // Also remove the "showing X of Y" footer
+      if (
+        block.type === "context" &&
+        block.elements?.[0]?.text?.includes("click below")
+      ) {
+        return {
+          type: "context",
+          elements: [
+            { type: "mrkdwn", text: `_Full preview: ${allBlocks.length} blocks_` },
+          ],
+        };
+      }
+      return block;
+    });
+
+    await client.chat.update({
+      channel: channel_id,
+      ts: originalMessage.ts,
+      blocks: finalBlocks,
+      text: originalMessage.text,
+    });
+
+    console.log(`Posted full preview for ${file.name} — ${allBlocks.length} blocks`);
+  } catch (err) {
+    console.error("Error showing full preview:", err.message);
   }
 });
 
