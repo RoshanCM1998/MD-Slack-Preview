@@ -155,16 +155,57 @@ These are Slack's limits, not ours:
 
 ## Production Deployment
 
-Replace the Cloudflare dev tunnel with a permanent host:
+### Azure App Service (recommended for company workspaces)
+
+One command, end-to-end:
+
+```powershell
+.\deploy.ps1 -All
+```
+
+That single run:
+
+1. Creates the Web App on an existing App Service Plan
+2. Enables HTTPS-only, TLS 1.2, and Always On
+3. Assigns a system-assigned managed identity and grants it `Key Vault Secrets User` on your vault
+4. Reads Slack tokens from `.env` (prompts only for anything missing) and pushes them into Key Vault
+5. Wires `@Microsoft.KeyVault(...)` references into the Web App's app settings — tokens never appear in env vars, images, or git
+6. Zips `bot.js` + `package.json` + `package-lock.json` and deploys
+
+Before your first run, fill in the **CONFIG** block at the top of `deploy.ps1`:
+
+```powershell
+$SubscriptionId   = ""   # az account show --query id -o tsv
+$ResourceGroup    = ""   # e.g. smartmoving-dev-rg
+$AppServicePlan   = ""   # B1+ plan with headroom, e.g. smartmoving-dev-appsvc
+$WebAppName       = ""   # globally unique, e.g. smartmoving-dev-md-slack-preview
+$KeyVaultName     = ""   # reuse an existing vault in the same subscription
+```
+
+Prerequisites:
+
+- Azure CLI installed (`choco install azure-cli`) and logged in (`az login`)
+- Approval from the owner of the target App Service Plan
+- `bot.js` switched to **Socket Mode** (see the note at the bottom of `deploy.ps1`) — this means no public inbound endpoint
+- A Slack app-level token (`xapp-...`) with scope `connections:write` enabled
+
+After the first deploy, routine code changes are just:
+
+```powershell
+.\deploy.ps1 -Deploy
+```
+
+Individual phases are available if you need them: `-Provision`, `-Secrets`, `-Configure`, `-Destroy`.
+
+### Other free hosts
 
 | Platform | Cost | Setup |
 |----------|------|-------|
+| [Fly.io](https://fly.io) | Free tier | Docker-based, supports Socket Mode |
 | [Railway](https://railway.app) | Free / $5 mo | `git push` to deploy |
-| [Render](https://render.com) | Free tier | Auto-deploy from GitHub |
-| [Fly.io](https://fly.io) | Free tier | Docker-based |
-| [AWS Lambda](https://aws.amazon.com/lambda/) | ~$0/mo | Needs API Gateway |
+| [Render](https://render.com) | Free tier | Auto-deploy from GitHub (spins down when idle — bad for Socket Mode) |
 
-Then update the **Event Subscriptions** and **Interactivity** URLs in your Slack app settings to point to your production URL.
+If you stay on HTTP Events mode, update the **Event Subscriptions** and **Interactivity** URLs in your Slack app settings to point to your production URL.
 
 ## Tech Stack
 
